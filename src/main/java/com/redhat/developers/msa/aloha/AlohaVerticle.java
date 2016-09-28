@@ -17,30 +17,26 @@
 package com.redhat.developers.msa.aloha;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
+import org.hawkular.apm.client.opentracing.APMTracer;
 
 import com.github.kennedyoliveira.hystrix.contrib.vertx.metricsstream.EventMetricsStreamHandler;
-import com.github.kristofa.brave.Brave;
-import com.github.kristofa.brave.EmptySpanCollectorMetricsHandler;
-import com.github.kristofa.brave.ServerRequestInterceptor;
-import com.github.kristofa.brave.ServerResponseInterceptor;
-import com.github.kristofa.brave.ServerSpan;
-import com.github.kristofa.brave.http.DefaultSpanNameProvider;
-import com.github.kristofa.brave.http.HttpServerRequestAdapter;
-import com.github.kristofa.brave.http.HttpServerResponseAdapter;
-import com.github.kristofa.brave.http.HttpSpanCollector;
-import com.github.kristofa.brave.httpclient.BraveHttpRequestInterceptor;
-import com.github.kristofa.brave.httpclient.BraveHttpResponseInterceptor;
 
 import feign.Logger;
 import feign.Logger.Level;
-import feign.httpclient.ApacheHttpClient;
 import feign.hystrix.HystrixFeign;
+import io.opentracing.Span;
+import io.opentracing.SpanContext;
+import io.opentracing.Tracer;
+import io.opentracing.propagation.Format;
+import io.opentracing.propagation.TextMap;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Handler;
+import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.json.Json;
 import io.vertx.ext.web.Router;
@@ -50,34 +46,49 @@ import io.vertx.ext.web.handler.CorsHandler;
 import io.vertx.ext.web.handler.StaticHandler;
 
 public class AlohaVerticle extends AbstractVerticle {
-    private static final Brave BRAVE = new Brave.Builder("aloha")
-            .spanCollector(HttpSpanCollector.create(System.getenv("ZIPKIN_SERVER_URL"), new EmptySpanCollectorMetricsHandler()))
-            .build();
 
-    @Override
+	private Tracer tracer = new APMTracer();
+
+	@Override
     public void start() throws Exception {
         Router router = Router.router(vertx);
-        router.route().handler(ctx -> {
-            // note: this is *not* an example of how to properly integrate vert.x with zipkin
-            // for a more appropriate way to do that, check the vert.x documentation
-            ServerRequestInterceptor serverRequestInterceptor = BRAVE.serverRequestInterceptor();
-            serverRequestInterceptor.handle(new HttpServerRequestAdapter(new VertxHttpServerRequest(ctx.request()), new DefaultSpanNameProvider()));
-            ctx.data().put("zipkin.span", BRAVE.serverSpanThreadBinder().getCurrentServerSpan());
-            ctx.next();
-            ctx.addBodyEndHandler(v -> BRAVE.serverResponseInterceptor().handle(new HttpServerResponseAdapter(() -> ctx.response().getStatusCode())));
-        });
         router.route().handler(BodyHandler.create());
         router.route().handler(CorsHandler.create("*")
             .allowedMethod(HttpMethod.GET)
             .allowedHeader("Content-Type"));
 
         // Aloha EndPoint
-        router.get("/api/aloha").handler(ctx -> ctx.response().end(aloha()));
+        router.get("/api/aloha").handler(ctx -> {
+        	SpanContext spanCtx = tracer.extract(Format.Builtin.TEXT_MAP,
+                    new HttpHeadersExtractAdapter(ctx.request().headers()));
+
+            try (Span serverSpan = tracer.buildSpan("GET")
+                    .asChildOf(spanCtx)
+                    .withTag("http.url", "/api/ahola")
+                    .withTag("service", "Aloha")
+                    .start()) {
+            	ctx.response().end(aloha());
+            }
+        });
 
         // Aloha Chained Endpoint
-        router.get("/api/aloha-chaining").handler(ctx -> alohaChaining(ctx, (list) -> ctx.response()
-            .putHeader("Content-Type", "application/json")
-            .end(Json.encode(list))));
+        router.get("/api/aloha-chaining").handler(ctx -> {
+        	SpanContext spanCtx = tracer.extract(Format.Builtin.TEXT_MAP,
+                    new HttpHeadersExtractAdapter(ctx.request().headers()));
+
+            Span serverSpan = tracer.buildSpan("GET")
+                    .asChildOf(spanCtx)
+                    .withTag("http.url", "/api/ahola-chaining")
+                    .withTag("service", "Aloha")
+                    .start();
+
+            alohaChaining(ctx, serverSpan, (list) -> {
+            	ctx.response()
+            		.putHeader("Content-Type", "application/json")
+	                .end(Json.encode(list));
+            	serverSpan.finish();
+            });
+        });
 
         // Health Check
         router.get("/api/health").handler(ctx -> ctx.response().end("I'm ok"));
@@ -97,10 +108,21 @@ public class AlohaVerticle extends AbstractVerticle {
         return String.format("Aloha mai %s", hostname);
     }
 
-    private void alohaChaining(RoutingContext context, Handler<List<String>> resultHandler) {
+    private void alohaChaining(RoutingContext context, Span parentSpan, Handler<List<String>> resultHandler) {
         vertx.<String> executeBlocking(
             // Invoke the service in a worker thread, as it's blocking.
-            future -> future.complete(getNextService(context).bonjour()),
+            future -> {
+            	String result = null;
+                try (Span clientSpan = tracer.buildSpan("CallBonjourChaining")
+                        .asChildOf(parentSpan)
+                        .start()) {
+                    Map<String,Object> h = new HashMap<>();
+                    tracer.inject(clientSpan.context(), Format.Builtin.TEXT_MAP,
+                            new HttpHeadersInjectAdapter(h));
+	            	result = getNextService(context).bonjour(h);
+                }
+            	future.complete(result);
+            },
             ar -> {
                 // Back to the event loop
                 // result cannot be null, hystrix would have called the fallback.
@@ -120,23 +142,48 @@ public class AlohaVerticle extends AbstractVerticle {
      */
     private BonjourService getNextService(RoutingContext context) {
         final String serviceName = "bonjour";
-        // This stores the Original/Parent ServerSpan from ZiPkin.
-        final ServerSpan serverSpan = (ServerSpan) context.data().get("zipkin.span");
-        final CloseableHttpClient httpclient =
-            HttpClients.custom()
-                .addInterceptorFirst(new BraveHttpRequestInterceptor(BRAVE.clientRequestInterceptor(), new DefaultSpanNameProvider()))
-                .addInterceptorFirst(new BraveHttpResponseInterceptor(BRAVE.clientResponseInterceptor()))
-                .build();
         final String url = String.format("http://%s:8080/", serviceName);
+        BonjourService fallback = (headers) -> "Bonjour response (fallback)";
         return HystrixFeign.builder()
-            // Use apache HttpClient which contains the ZipKin Interceptors
-            .client(new ApacheHttpClient(httpclient))
-            // Bind Zipkin Server Span to Feign Thread, but this probably won't work in a real-world scenario
-            // as a concurrent request might override the value set to this thread
-            .requestInterceptor((t) -> BRAVE.serverSpanThreadBinder().setCurrentSpan(serverSpan))
-            .logger(new Logger.ErrorLogger()).logLevel(Level.BASIC)
-            .target(BonjourService.class, url,
-                () -> "Bonjour response (fallback)");
+             .logger(new Logger.ErrorLogger()).logLevel(Level.BASIC)
+            .target(BonjourService.class, url, fallback);
     }
 
+    public final class HttpHeadersExtractAdapter implements TextMap {
+        private final Map<String,String> map;
+
+        public HttpHeadersExtractAdapter(final MultiMap multiValuedMap) {
+        	// Convert to single valued map
+            this.map = new HashMap<>();
+            multiValuedMap.forEach(entry -> map.put(entry.getKey(), entry.getKey()));
+        }
+
+        @Override
+        public Iterator<Map.Entry<String, String>> iterator() {
+            return map.entrySet().iterator();
+        }
+
+        @Override
+        public void put(String key, String value) {
+            throw new UnsupportedOperationException("TextMapInjectAdapter should only be used with Tracer.extract()");
+        }
+    }
+
+    public final class HttpHeadersInjectAdapter implements TextMap {
+        private final Map<String,Object> map;
+
+        public HttpHeadersInjectAdapter(final Map<String,Object> map) {
+            this.map = map;
+        }
+
+        @Override
+        public Iterator<Map.Entry<String, String>> iterator() {
+            throw new UnsupportedOperationException("TextMapInjectAdapter should only be used with Tracer.inject()");
+        }
+
+        @Override
+        public void put(String key, String value) {
+            this.map.put(key, value);
+        }
+    }
 }

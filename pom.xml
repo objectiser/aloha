@@ -42,11 +42,11 @@
 		<maven.compiler.target>1.8</maven.compiler.target>
 
 		<!-- other plugin versions -->
-		<netflix.feign.version>8.15.1</netflix.feign.version>
+		<io.github.openfeign.version>9.3.1</io.github.openfeign.version>
 		<vertx.version>3.2.1</vertx.version>
 		<hystrix.version>1.5.1</hystrix.version>
 		<version.exec.plugin>1.4.0</version.exec.plugin>
-		<brave.version>3.9.1</brave.version>
+        <hawkular-apm.version>0.10.1.Final-SNAPSHOT</hawkular-apm.version>
 
 		<!-- fabric8 version -->
 		<fabric8.version>2.2.105</fabric8.version>
@@ -94,20 +94,22 @@
 			<artifactId>javax.servlet-api</artifactId>
 			<version>3.1.0</version>
 		</dependency>
+
+		<!-- Feign -->
 		<dependency>
-			<groupId>com.netflix.feign</groupId>
+			<groupId>io.github.openfeign</groupId>
 			<artifactId>feign-core</artifactId>
-			<version>${netflix.feign.version}</version>
+			<version>${io.github.openfeign.version}</version>
 		</dependency>
 		<dependency>
-			<groupId>com.netflix.feign</groupId>
+			<groupId>io.github.openfeign</groupId>
 			<artifactId>feign-hystrix</artifactId>
-			<version>${netflix.feign.version}</version>
+			<version>${io.github.openfeign.version}</version>
 		</dependency>
 		<dependency>
-			<groupId>com.netflix.feign</groupId>
+			<groupId>io.github.openfeign</groupId>
 			<artifactId>feign-httpclient</artifactId>
-			<version>${netflix.feign.version}</version>
+			<version>${io.github.openfeign.version}</version>
 		</dependency>
 
 		<!-- Vertx Hystrix Stream -->
@@ -117,26 +119,16 @@
 			<version>${hystrix.version}</version>
 		</dependency>
 
-		<!-- Brave Zipkin -->
+        <!--  Hawkular APM -->
 		<dependency>
-			<groupId>io.zipkin.brave</groupId>
-			<artifactId>brave-web-servlet-filter</artifactId>
-			<version>${brave.version}</version>
+			<groupId>org.hawkular.apm</groupId>
+			<artifactId>hawkular-apm-client-opentracing</artifactId>
+			<version>${hawkular-apm.version}</version>
 		</dependency>
 		<dependency>
-			<groupId>io.zipkin.brave</groupId>
-			<artifactId>brave-apache-http-interceptors</artifactId>
-			<version>${brave.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>io.zipkin.brave</groupId>
-			<artifactId>brave-spancollector-http</artifactId>
-			<version>${brave.version}</version>
-		</dependency>
-		<dependency>
-			<groupId>org.apache.httpcomponents</groupId>
-			<artifactId>httpclient</artifactId>
-			<version>4.5.2</version>
+			<groupId>org.hawkular.apm</groupId>
+			<artifactId>hawkular-apm-trace-publisher-rest-client</artifactId>
+			<version>${hawkular-apm.version}</version>
 		</dependency>
 
 	</dependencies>

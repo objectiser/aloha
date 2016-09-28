@@ -16,11 +16,14 @@
  */
 package com.redhat.developers.msa.aloha;
 
+import java.util.Map;
+
+import feign.HeaderMap;
 import feign.RequestLine;
 
 public interface BonjourService {
 
 	@RequestLine("GET /api/bonjour")
-	public String bonjour();
+	public String bonjour(@HeaderMap Map<String, Object> headerMap);
 
 }
